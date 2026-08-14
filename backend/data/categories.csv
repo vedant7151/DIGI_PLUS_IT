@@ -1,0 +1,9 @@
+id,name,service
+1,Access Management,identity
+2,Laptop / Endpoint,endpoint
+3,Network & VPN,network
+4,Email & Collaboration,saas
+5,ERP / WMS,business-apps
+6,Printers & Devices,peripherals
+7,Security,security
+8,Telephony,voice
