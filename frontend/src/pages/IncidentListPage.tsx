@@ -56,7 +56,7 @@ export default function IncidentListPage() {
         />
       </div>
 
-      {error && <Banner tone="error">{error}</Banner>}
+      {error && <Banner>{error}</Banner>}
       {loading && <p className="text-slate-400">Loading tickets…</p>}
       {!loading && !error && incidents.length === 0 && (
         <p className="rounded-xl border border-slate-800 bg-slate-900 p-6 text-slate-400">
@@ -120,6 +120,6 @@ function Select({
   );
 }
 
-function Banner({ children, tone }: { children: string; tone: "error" }) {
+function Banner({ children }: { children: string }) {
   return <div className="mb-4 rounded-lg bg-rose-950 px-4 py-3 text-sm text-rose-200">{children}</div>;
 }
