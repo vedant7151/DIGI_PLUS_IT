@@ -1,6 +1,6 @@
 # AI-Powered Service Desk
 
-Support engineers log incidents in plain language. The system classifies them (Groq), finds similar past tickets and KB articles (Hugging Face embeddings + cosine similarity), and the engineer stays in control of category, priority, and resolution.
+Support engineers log incidents in plain language. The system classifies them with **Groq** (`openai/gpt-oss-120b`), finds similar past tickets and KB articles with **Hugging Face** embeddings (`all-MiniLM-L6-v2`) plus cosine similarity, and the engineer stays in control of category, priority, and resolution. Persistence is **MongoDB Atlas**.
 
 ## Prerequisites
 
@@ -43,9 +43,11 @@ MONGODB_URI=mongodb+srv://USER:PASSWORD@CLUSTER.mongodb.net
 GROQ_API_KEY=gsk_...
 HF_API_KEY=hf_...
 PORT=3001
+# optional — defaults to openai/gpt-oss-120b
+# GROQ_MODEL=openai/gpt-oss-120b
 ```
 
-`MONGODB_URI` is required. The backend talks only to Atlas over the internet (no local Mongo fallback).
+`MONGODB_URI` is required. The backend talks only to **MongoDB Atlas** over the internet (no local Mongo, no Postgres/Neon/Prisma). Classification uses Groq **`openai/gpt-oss-120b`** unless you set `GROQ_MODEL`.
 
 Edit `frontend/.env`:
 
@@ -81,16 +83,18 @@ Open http://localhost:5173
 
 ### 5. Use the app
 
-1. **New** — create a ticket (saved immediately; AI runs after).
-2. **Incident detail** — edit category/priority/summary, retry classification or similarity (toasts on those buttons), record a resolution.
-3. **Analytics** — ticket counts by category, priority, and status.
+1. **New** — create a ticket (saved immediately; Groq + HF run after, independently).
+2. **List** — filter by status/category/priority; **search** is client-side keyword matching (not AI).
+3. **Incident detail** — edit category/priority/summary, retry classification or similarity (toasts on those buttons), record a resolution. **Mark as resolved** returns you to the list (`/`). Similar incidents show a similarity % (high % = likely duplicate; you decide).
+4. **Analytics** — ticket counts by category, priority, and status.
 
 ## Approach
 
 - **Persist first, analyze second.** Creating a ticket returns immediately (`status=open`). Groq classification and HF embeddings run afterward and can fail independently without a 500.
 - **Thin adapters.** `AIProvider` (Groq) and `EmbeddingProvider` (HF HTTP feature-extraction) never run models in-process. Retrieval is cosine similarity in application code over stored vectors.
 - **AI suggests, humans decide.** Category and priority are always editable dropdowns, with an “🤖 AI Suggested” badge.
-- **MongoDB Atlas** for persistence (`incidents`, `kb_articles`), reached over the internet.
+- **MongoDB Atlas** for persistence (`incidents`, `kb_articles`), reached over the internet. Official `mongodb` driver — no Prisma.
+- **Groq** `openai/gpt-oss-120b` for category, priority, and summary (JSON mode).
 - **Hugging Face Inference Providers** for embeddings (`sentence-transformers/all-MiniLM-L6-v2` over HTTPS). No model is downloaded or run locally.
 
 ## Known limitations

@@ -11,12 +11,13 @@ Every decision below is framed with **STAR** (Situation, Task, Action, Result) s
 
 | Layer | Choice |
 |---|---|
-| Frontend | React (Vite) + TailwindCSS |
-| Backend | Node.js + Express (or FastAPI/Python — see alternative below) |
-| Database | **Neon** — free-tier serverless Postgres (via Prisma ORM) |
-| AI Provider (text/classification) | **Groq API** — free tier, Llama 3.3 70B (fast, generous rate limits, JSON mode) |
-| Embeddings / similarity | **Hugging Face Inference Providers API** — `feature-extraction` endpoint calling `sentence-transformers/all-MiniLM-L6-v2` (free tier, rate-limited) + cosine similarity computed server-side. No model weights downloaded or executed locally. |
-| Dev/runtime | Local Node/Python process, `.env` config (Neon connection string + Groq key), single `npm run dev` command |
+| Frontend | React (Vite) + TailwindCSS + React Router |
+| Backend | Node.js + Express (TypeScript) |
+| Database | **MongoDB Atlas** (free tier) via the official `mongodb` driver — collections `incidents` and `kb_articles`. No Prisma, no Postgres/Neon. |
+| AI Provider (text/classification) | **Groq API** — free tier, model **`openai/gpt-oss-120b`**, JSON mode (`classifyIncident` / `summarize`) |
+| Embeddings / similarity | **Hugging Face Inference Providers API** — `feature-extraction` on `sentence-transformers/all-MiniLM-L6-v2` over HTTPS + cosine similarity in application code. No local model weights. |
+| List search | Frontend keyword filter only (no AI, no extra API) |
+| Dev/runtime | Two processes (`backend/` and `frontend/` each `npm run dev`); `.env` holds `MONGODB_URI`, `GROQ_API_KEY`, `HF_API_KEY` |
 
 ---
 
@@ -44,27 +45,27 @@ Every decision below is framed with **STAR** (Situation, Task, Action, Result) s
 
 ---
 
-## 4. Decision: Database — Neon (free-tier serverless Postgres), not SQLite, not self-hosted Postgres
+## 4. Decision: Database — MongoDB Atlas (official driver), not Neon/Postgres, not Prisma, not SQLite
 
-**Situation:** The assessment needs "sensible data handling" and real persistence, and the build constraint is "free APIs and database only" — but a local SQLite file, while free, doesn't reflect how the app would actually be run/shared (e.g., an evaluator opening a deployed link, or two people looking at the same data), and self-hosted Postgres needs Docker/infra the evaluator would have to install.
+**Situation:** The assessment needs real persistence that an evaluator can share, with a free tier and no local database server. An earlier Neon (Postgres) + Prisma path failed repeatedly from this network (connection resets / unreachable pooler). A later local in-process Mongo fallback was dropped once internet access to Atlas was reliable.
 
-**Task:** Choose a datastore that's genuinely persistent, relational (incidents ↔ KB articles ↔ resolutions), reachable from both local dev and a deployed instance, and costs nothing to run at this scale.
+**Task:** Persist incidents and KB articles (including embedding vectors and raw AI JSON) with a hosted free-tier database and a thin Node client.
 
-**Action:** Chose **Neon** — a serverless Postgres provider with a free tier (generous storage/compute for a small app, autosuspends when idle so it stays within free limits). Connected via Prisma using a standard `DATABASE_URL` connection string in `.env`. This gives real Postgres (proper types, indexing, JSON columns for embeddings) without installing or managing a database server locally.
+**Action:** Chose **MongoDB Atlas** (M0 free cluster) and the official **`mongodb` Node driver**. Documents map 1:1 to the design model (`incidents`, `kb_articles`); embeddings and `aiRawResponse` are stored as native JSON arrays/objects. Connection string is `MONGODB_URI` in `backend/.env`. There is **no Prisma**, **no SQL schema**, and **no local MongoDB fallback**.
 
-**Result:** The app is backed by a production-grade relational database from day one, at zero cost, and the same connection string works whether the evaluator runs the backend locally or the app is deployed (e.g., to Render/Vercel) — one fewer thing to reconfigure between "demo on my laptop" and "share a live link." **Trade-off accepted:** requires an internet connection during dev/demo (no fully-offline mode) and a one-time signup for a free Neon project; both are minor compared to the benefit of a real, shareable, zero-cost database. Documented as a known limitation: Neon's free tier has compute/storage caps and can "cold start" after idling, which can add a brief delay to the first request after inactivity.
+**Result:** One connection string works for local demo and a deployed API; documents are a natural fit for nullable AI fields and vectors. **Trade-off accepted:** Atlas requires internet and Network Access (IP allowlist). Documented limitation: free-tier Atlas is not a vector database — cosine similarity still runs in the Node process over a small collection.
 
 ---
 
-## 5. Decision: AI Provider — Groq API (free tier), via a thin provider-adapter layer
+## 5. Decision: AI Provider — Groq API (free tier), model `openai/gpt-oss-120b`
 
-**Situation:** The brief requires AI to be a *meaningful*, non-hardcoded part of the solution, used for (a) classification/summarization of an incident, and (b) connecting incidents to relevant KB/past-ticket content — and the build constraint is free-tier-only, no paid API keys.
+**Situation:** The brief requires AI to be a *meaningful*, non-hardcoded part of the solution for classification/summarization, using only a free-tier provider.
 
-**Task:** Pick an LLM provider that (a) has a genuinely free tier with rate limits generous enough to demo comfortably, (b) supports structured/JSON output for reliable classification, and (c) is fast enough that "auto-analyze on incident creation" doesn't feel sluggish.
+**Task:** Pick an LLM that supports structured JSON, is fast enough for auto-analyze, and stays on Groq's free tier.
 
-**Action:** Chose the **Groq API** (free tier) running an open-weight model such as Llama 3.3 70B — Groq's inference is unusually fast (LPU hardware), the free tier is generous for a demo's request volume, and it supports JSON-mode/structured output for reliable classification. Wrapped **all AI calls behind a single `AIProvider` interface** (`classifyIncident()`, `summarize()`) rather than calling the SDK directly from route handlers, so swapping to another free provider (e.g., Google Gemini's free tier) later is a one-file change. *(Google Gemini's free tier is documented as the fallback/alternative — also genuinely free and strong at structured output, chosen against here mainly because Groq's latency is lower for a snappier "auto-analyze" UX.)*
+**Action:** Chose the **Groq API** (OpenAI-compatible `https://api.groq.com/openai/v1/chat/completions`) running **`openai/gpt-oss-120b`** (overridable via `GROQ_MODEL`). Groq's LPU inference is fast; JSON mode is used for `{ category, priority, summary }`. All calls go through `AIProvider.classifyIncident()` / `summarize()` so Groq is not invoked from route handlers. Classification is **persisted independently** of embeddings so a slow HF call cannot hide Groq results in the UI.
 
-**Result:** Meets the "AI must be meaningful, not hardcoded rules" requirement directly — classification and summarization genuinely depend on live model output — while keeping the entire project runnable with zero spend. The adapter layer also makes the required **graceful degradation** (NFR: AI failure shouldn't block core CRUD) straightforward: the adapter catches provider errors *and* free-tier rate-limit errors (HTTP 429) and returns a `null`/`"unavailable"` state that the UI renders as "AI analysis pending — retry" instead of crashing the request. **Trade-off accepted and documented:** free-tier rate limits are real — under heavy/burst use (e.g., seeding many tickets at once) requests may need to be throttled or queued; the seed script batches/delays calls to stay within limits rather than assuming unlimited throughput.
+**Result:** Live Groq output drives category, priority, and summary. 429/timeouts return `null` fields and a Retry control — never a 500. **Trade-off accepted:** free-tier rate limits; the seed script throttles Groq calls.
 
 ---
 
@@ -74,9 +75,9 @@ Every decision below is framed with **STAR** (Situation, Task, Action, Result) s
 
 **Task:** Implement semantic retrieval that is genuinely AI-driven and free, without running any model locally and without introducing infrastructure (a hosted vector DB) disproportionate to a "small knowledge base."
 
-**Action:** Call the **Hugging Face Inference Providers API** (`feature-extraction` task) against a small open sentence-embedding model, `sentence-transformers/all-MiniLM-L6-v2` — the same model family originally considered, but invoked as a hosted HTTP call rather than loaded into the Node process. This keeps the implementation consistent with the rest of the stack (thin `EmbeddingProvider` adapter, same shape as `AIProvider`) and ties naturally into the project's existing Hugging Face footprint, since the seed dataset (`mindweave/help-desk-tickets`) is also sourced from HF. Store each returned embedding vector as a column in Postgres (Neon) and compute cosine similarity in application code at query time — the KB is small enough that this is O(n) over a few hundred rows, well within interactive latency once the vector is fetched.
+**Action:** Call the **Hugging Face Inference Providers API** (`feature-extraction` task) against `sentence-transformers/all-MiniLM-L6-v2` over HTTPS (thin `EmbeddingProvider` adapter). Store each vector as an array on the MongoDB document and compute cosine similarity in application code at query time. Similar incidents are scored only against **resolved/closed** tickets; a high score is a **hint** (possible duplicate), not an auto-merge. List-page search is **not** this path — it is a frontend keyword filter.
 
-**Result:** Full semantic search capability (the hard part of FR5) with **zero paid cost and no local inference**, while staying inside a single coherent ecosystem story (Groq for classification, HF for embeddings, HF for the source dataset) that's easy to explain in an interview. **Trade-off accepted:** the embeddings endpoint is now a second external dependency with its own free-tier rate limit (roughly a few hundred requests/hour, shared-infrastructure cold starts of 10–30s on less-popular models) — so, like the Groq classification path, it needs its own timeout/retry and graceful-degradation handling rather than being treated as "always available." This is documented explicitly in §7 (error handling) rather than assumed away, and the seed script throttles/batches embedding calls for the same reason it throttles Groq calls (§7 of this doc). **Also documented as a known limitation:** this embedding model is smaller/less accurate than a large hosted model, and the current design doesn't scale to tens of thousands of documents on a single process — at production scale this would move to Postgres's `pgvector` extension (which Neon supports) alongside the same hosted embedding call.
+**Result:** Semantic retrieval for FR5 with zero paid cost and no local inference. Groq + HF + HF dataset is one ecosystem story. **Trade-off accepted:** embeddings have their own 429/cold-start profile; they persist independently of Groq so one failure does not wipe the other. At production scale this would move to a vector index (e.g. Atlas Vector Search) with the same hosted embedding call.
 
 ---
 
@@ -86,7 +87,7 @@ Every decision below is framed with **STAR** (Situation, Task, Action, Result) s
 
 **Task:** Use the dataset to seed realistic KB/historical-ticket content without making the running app dependent on Hugging Face's availability.
 
-**Action:** Wrote a one-time `scripts/seed.js` (or `seed.py`) that downloads/reads the dataset, extracts a representative subset (category, description, resolution fields), and inserts it into Neon (Postgres) as historical resolved incidents + derived KB articles, fetching each embedding from the Hugging Face Inference Providers API at seed time (see §6) and lightly throttling both the embedding calls and the Groq classification calls made during seeding to stay inside both providers' free-tier rate limits.
+**Action:** Wrote `backend/scripts/seed.ts` that reads a **cached CSV export** of the dataset under `backend/data/` (so seed does not depend on Hugging Face Hub being up), inserts historical resolved incidents + derived KB articles into **MongoDB Atlas**, fetches embeddings from HF Inference Providers at seed time, and throttles Groq/HF to stay inside free-tier limits. Seeded incidents use dataset labels rather than live Groq classification.
 
 **Result:** The running app has zero runtime dependency on an external dataset host (more reliable demo), while still satisfying the requirement to ground the KB/history in the provided real-world data rather than fabricated examples.
 
@@ -97,11 +98,13 @@ Every decision below is framed with **STAR** (Situation, Task, Action, Result) s
 | Option | Why rejected |
 |---|---|
 | Next.js full-stack | Overkill for a small SPA + API; adds SSR/routing concepts not needed here |
-| SQLite | Fine for pure local dev, but doesn't work well for a shareable/deployed demo; Neon gives the same zero-cost simplicity plus a real shared connection string |
-| Self-hosted Postgres / Docker Compose | Setup friction for the evaluator outweighs benefit; Neon removes the infra step entirely while still being free |
+| Neon + Prisma (Postgres) | Attempted first; this network could not reach Neon's pooler reliably. MongoDB Atlas + native driver replaced it. |
+| SQLite | Fine for pure local files, but not a shared cloud demo. |
+| Local MongoDB / `mongodb-memory-server` | Useful as a temporary offline fallback; removed so the demo always uses Atlas over the internet. |
+| Self-hosted Postgres / Docker Compose | Extra evaluator setup; Atlas is free-tier hosted persistence without Docker. |
 | Anthropic Claude / OpenAI API as primary | Both are strong providers, but require a paid key (or very limited/expired free credits) — violates the "free APIs only" constraint; kept as a documented adapter-swap option, not the default |
 | Local in-process embedding model (`@xenova/transformers` / `transformers.js`) | Would remove the rate-limit exposure, but violates the project constraint that all AI inference run via an external free API rather than shipping/running model weights inside the app — also adds a non-trivial cold-start/bundle-size cost to the server process |
 | Paid hosted embeddings API (OpenAI/Cohere production tier) | Requires a paid key or a very limited trial credit — violates the "free APIs only" constraint |
-| Hosted vector DB (Pinecone) | Infra/cost/setup disproportionate to a "small" KB; Postgres (`pgvector`-ready via Neon) is a lighter, free-tier-compatible path if scale ever required it |
+| Hosted vector DB (Pinecone) | Disproportionate to a small KB; in-app cosine over Atlas documents is enough; Atlas Vector Search would be the later path |
 | Fully rule-based/keyword categorization | Explicitly disallowed — brief states "do not rely entirely on hard-coded rules to simulate AI behavior" |
 | LangChain/heavy agent framework | Adds abstraction overhead; a thin custom provider-adapter is more transparent and easier to explain line-by-line in an interview |
