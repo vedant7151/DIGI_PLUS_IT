@@ -7,7 +7,7 @@ Support engineers log incidents in plain language. The system classifies them (G
 - Node.js 20+ and npm
 - A **Groq** free-tier API key: https://console.groq.com
 - A **Hugging Face** token with Inference Providers access: https://huggingface.co/settings/tokens
-- **MongoDB Atlas** (optional). If Atlas cannot be reached, the backend starts a local MongoDB automatically.
+- **MongoDB Atlas** — cloud cluster accessed over the internet (`MONGODB_URI`)
 
 ## Setup and run
 
@@ -45,7 +45,7 @@ HF_API_KEY=hf_...
 PORT=3001
 ```
 
-`MONGODB_URI` can be left empty; the app will use a local MongoDB fallback.
+`MONGODB_URI` is required. The backend talks only to Atlas over the internet (no local Mongo fallback).
 
 Edit `frontend/.env`:
 
@@ -90,7 +90,8 @@ Open http://localhost:5173
 - **Persist first, analyze second.** Creating a ticket returns immediately (`status=open`). Groq classification and HF embeddings run afterward and can fail independently without a 500.
 - **Thin adapters.** `AIProvider` (Groq) and `EmbeddingProvider` (HF HTTP feature-extraction) never run models in-process. Retrieval is cosine similarity in application code over stored vectors.
 - **AI suggests, humans decide.** Category and priority are always editable dropdowns, with an “🤖 AI Suggested” badge.
-- **MongoDB** for persistence (`incidents`, `kb_articles`). Atlas is preferred; local Mongo is the fallback.
+- **MongoDB Atlas** for persistence (`incidents`, `kb_articles`), reached over the internet.
+- **Hugging Face Inference Providers** for embeddings (`sentence-transformers/all-MiniLM-L6-v2` over HTTPS). No model is downloaded or run locally.
 
 ## Known limitations
 
@@ -98,9 +99,6 @@ Open http://localhost:5173
 - KB is small/seeded, not continuously curated.
 - Similarity is in-app cosine similarity, not a production vector database.
 - Embeddings and classification both go through free-tier APIs (rate limits, cold starts). Failures degrade to retry UI; they must not block CRUD.
-- No SLA / escalation logic.
-- AI can be wrong; override is always one dropdown away.
-- MongoDB Atlas from some networks times out; the backend then uses a local Mongo process so the demo still runs.
 - The embedding model (MiniLM) is smaller than large hosted embedders; this scale is a few hundred documents, not tens of thousands.
 - Groq/HF free-tier quotas require the seed script to throttle rather than burst.
 

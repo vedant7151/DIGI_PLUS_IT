@@ -93,7 +93,7 @@ export async function createIncident(input: { title: string; description: string
     updatedAt: now,
   };
   await col.insertOne(doc as never);
-  void enrichIncident(id);
+  void enrichIncident(id).catch((err) => console.error("AI enrich failed", err));
   return mapIncident(doc);
 }
 
@@ -103,11 +103,45 @@ export async function enrichIncident(id: string): Promise<Incident | null> {
   try {
     const incident = await findIncident(id);
     if (!incident) return null;
-    const [classification, embedding] = await Promise.all([
-      classifyIncident(incident.title, incident.description),
-      embedText(`${incident.title}\n${incident.description}`),
-    ]);
-    return persistAnalysis(incident, classification, embedding);
+
+    const groqTask = classifyIncident(incident.title, incident.description).then(async (classification) => {
+      const raw = asAiRaw((await findIncident(id))?.aiRawResponse);
+      const patch = fieldsFromClassification(classification);
+      const col = await incidentsCol();
+      await col.updateOne(
+        { _id: id as never },
+        {
+          $set: {
+            category: patch.category,
+            priority: patch.priority,
+            aiSummary: patch.aiSummary,
+            aiRawResponse: { ...raw, groq: patch.aiRawGroq },
+            updatedAt: new Date(),
+          },
+        },
+      );
+    });
+
+    const hfTask = embedText(`${incident.title}\n${incident.description}`).then(async (embedding) => {
+      const raw = asAiRaw((await findIncident(id))?.aiRawResponse);
+      const col = await incidentsCol();
+      await col.updateOne(
+        { _id: id as never },
+        {
+          $set: {
+            embedding: embedding.ok ? embedding.embedding : null,
+            aiRawResponse: {
+              ...raw,
+              embedding: embedding.ok ? { ok: true, dim: embedding.embedding.length } : embedding.raw,
+            },
+            updatedAt: new Date(),
+          },
+        },
+      );
+    });
+
+    await Promise.allSettled([groqTask, hfTask]);
+    return findIncident(id);
   } finally {
     inFlight.delete(id);
   }
@@ -123,10 +157,13 @@ function fieldsFromClassification(classification: ClassificationOutcome) {
     };
   }
   if (classification.reason === "parse_fallback") {
+    const raw = classification.raw as Record<string, unknown> | null;
+    const maybeSummary =
+      raw && typeof raw === "object" && typeof raw.summary === "string" ? raw.summary : null;
     return {
       category: "Uncategorized",
       priority: "Medium" as Priority,
-      aiSummary: null as string | null,
+      aiSummary: maybeSummary,
       aiRawGroq: classification.raw,
     };
   }
@@ -136,33 +173,6 @@ function fieldsFromClassification(classification: ClassificationOutcome) {
     aiSummary: null as string | null,
     aiRawGroq: classification.raw,
   };
-}
-
-async function persistAnalysis(
-  incident: Incident,
-  classification: ClassificationOutcome,
-  embedding: Awaited<ReturnType<typeof embedText>>,
-) {
-  const groqFields = fieldsFromClassification(classification);
-  const raw: AiRaw = {
-    groq: groqFields.aiRawGroq,
-    embedding: embedding.ok ? { ok: true, dim: embedding.embedding.length } : embedding.raw,
-  };
-  const col = await incidentsCol();
-  await col.updateOne(
-    { _id: incident.id as never },
-    {
-      $set: {
-        category: groqFields.category,
-        priority: groqFields.priority,
-        aiSummary: groqFields.aiSummary,
-        embedding: embedding.ok ? embedding.embedding : null,
-        aiRawResponse: raw,
-        updatedAt: new Date(),
-      },
-    },
-  );
-  return findIncident(incident.id);
 }
 
 export async function retryClassification(id: string): Promise<Incident | null> {

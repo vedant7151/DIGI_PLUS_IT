@@ -16,6 +16,7 @@ export default function IncidentListPage() {
   const [status, setStatus] = useState("");
   const [category, setCategory] = useState("");
   const [priority, setPriority] = useState("");
+  const [query, setQuery] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -30,12 +31,14 @@ export default function IncidentListPage() {
       .finally(() => setLoading(false));
   }, [status, category, priority]);
 
+  const visible = filterByWords(incidents, query);
+
   return (
     <div>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">Incidents</h1>
-          <p className="text-sm text-slate-400">Filter by status, category, and priority.</p>
+          <p className="text-sm text-slate-400">Search by words, or filter by status, category, and priority.</p>
         </div>
         <Link
           to="/new"
@@ -44,6 +47,17 @@ export default function IncidentListPage() {
           ➕ New incident
         </Link>
       </div>
+
+      <label className="mb-4 block text-sm">
+        <span className="mb-1 block text-slate-400">Search incidents</span>
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="e.g. vpn disconnect wfh"
+          className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2"
+        />
+      </label>
 
       <div className="mb-4 grid gap-3 sm:grid-cols-3">
         <Select label="Status" value={status} onChange={setStatus} options={STATUSES.map((s) => [s, `${STATUS_EMOJI[s]} ${STATUS_LABEL[s]}`])} />
@@ -58,14 +72,16 @@ export default function IncidentListPage() {
 
       {error && <Banner>{error}</Banner>}
       {loading && <p className="text-slate-400">Loading tickets…</p>}
-      {!loading && !error && incidents.length === 0 && (
+      {!loading && !error && visible.length === 0 && (
         <p className="rounded-xl border border-slate-800 bg-slate-900 p-6 text-slate-400">
-          No incidents match these filters.
+          {query.trim()
+            ? `No incidents match “${query.trim()}”.`
+            : "No incidents match these filters."}
         </p>
       )}
 
       <ul className="space-y-3">
-        {incidents.map((item) => (
+        {visible.map((item) => (
           <li key={item.id}>
             <Link
               to={`/incidents/${item.id}`}
@@ -88,6 +104,32 @@ export default function IncidentListPage() {
       </ul>
     </div>
   );
+}
+
+function filterByWords(incidents: Incident[], query: string): Incident[] {
+  const words = query
+    .toLowerCase()
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter(Boolean);
+  if (words.length === 0) return incidents;
+  return incidents.filter((item) => {
+    const haystack = [
+      item.title,
+      item.description,
+      item.aiSummary,
+      item.category,
+      item.priority,
+      item.status,
+      STATUS_LABEL[item.status],
+      item.resolutionNotes,
+      item.resolutionCategory,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return words.every((word) => haystack.includes(word));
+  });
 }
 
 function Select({

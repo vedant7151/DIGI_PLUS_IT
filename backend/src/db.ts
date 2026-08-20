@@ -1,87 +1,41 @@
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { MongoClient, type Collection, type Db } from "mongodb";
-import { MongoMemoryServer } from "mongodb-memory-server";
 
 const globalForMongo = globalThis as unknown as {
-  mongo?: { client: MongoClient; db: Db; mongod?: MongoMemoryServer };
+  mongo?: { client: MongoClient; db: Db };
 };
 
-function atlasUri(): string | null {
+function atlasUri(): string {
   const raw = (process.env.MONGODB_URI ?? "").trim().replace(/^['"]|['"]$/g, "");
-  if (!raw || raw.startsWith("postgres")) return null;
+  if (!raw || raw.startsWith("postgres")) {
+    throw new Error("Set MONGODB_URI in backend/.env to your MongoDB Atlas connection string.");
+  }
   return raw;
 }
 
-const clientOptions = {
-  family: 4 as const,
-  tls: true,
-  serverSelectionTimeoutMS: 12_000,
-  connectTimeoutMS: 10_000,
-};
+async function connect(): Promise<{ client: MongoClient; db: Db }> {
+  if (globalForMongo.mongo) return globalForMongo.mongo;
 
-async function connectAtlas(uri: string): Promise<{ client: MongoClient; db: Db }> {
-  const client = new MongoClient(uri, clientOptions);
+  const client = new MongoClient(atlasUri(), {
+    family: 4,
+    tls: true,
+    serverSelectionTimeoutMS: 30_000,
+    connectTimeoutMS: 20_000,
+  });
   await client.connect();
   const db = client.db();
   await db.command({ ping: 1 });
   console.log("🍃 Connected to MongoDB Atlas");
-  return { client, db };
+  globalForMongo.mongo = { client, db };
+  return globalForMongo.mongo;
 }
 
-async function connectLocal(): Promise<{ client: MongoClient; db: Db; mongod: MongoMemoryServer }> {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const dbPath = path.resolve(here, "../.data/mongo");
-  fs.mkdirSync(dbPath, { recursive: true });
-
-  const mongod = await MongoMemoryServer.create({
-    instance: {
-      dbPath,
-      storageEngine: "wiredTiger",
-    },
-  });
-  const client = new MongoClient(mongod.getUri(), {
-    serverSelectionTimeoutMS: 20_000,
-  });
-  await client.connect();
-  const db = client.db();
-  console.log("🍃 Atlas unreachable — using local MongoDB at", mongod.getUri());
-  return { client, db, mongod };
-}
-
-async function connect(): Promise<{ client: MongoClient; db: Db; mongod?: MongoMemoryServer }> {
-  if (globalForMongo.mongo) return globalForMongo.mongo;
-
-  const uri = atlasUri();
-  if (uri) {
-    try {
-      const atlas = await connectAtlas(uri);
-      globalForMongo.mongo = atlas;
-      return atlas;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn("⚠️  Atlas connection failed:", message);
-      console.warn("   Add your IP under Atlas → Network Access (or 0.0.0.0/0 for a demo), then retry.");
-      console.warn("   Falling back to a local MongoDB so the app can still run.");
-    }
-  }
-
-  const local = await connectLocal();
-  globalForMongo.mongo = local;
-  return local;
-}
-
-export async function withDbRetry<T>(fn: () => Promise<T>, attempts = 2): Promise<T> {
+export async function withDbRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
   let lastError: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
       return await fn();
     } catch (err) {
       lastError = err;
-      if (globalForMongo.mongo?.mongod) {
-        await globalForMongo.mongo.mongod.stop().catch(() => undefined);
-      }
       await globalForMongo.mongo?.client.close().catch(() => undefined);
       globalForMongo.mongo = undefined;
       await new Promise((r) => setTimeout(r, 400 * 2 ** i));
@@ -125,6 +79,5 @@ export async function pingDb(): Promise<void> {
 export async function closeDb(): Promise<void> {
   if (!globalForMongo.mongo) return;
   await globalForMongo.mongo.client.close().catch(() => undefined);
-  await globalForMongo.mongo.mongod?.stop().catch(() => undefined);
   globalForMongo.mongo = undefined;
 }

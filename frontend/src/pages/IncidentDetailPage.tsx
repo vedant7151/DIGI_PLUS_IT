@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useNavigate } from "react-router-dom";
 import { getIncident, retryClassification, retrySimilarity, updateIncident } from "../api";
 import Toast from "../Toast";
 import {
@@ -12,6 +12,7 @@ import {
   type IncidentDetail,
 } from "../types";
 
+
 export default function IncidentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [detail, setDetail] = useState<IncidentDetail | null>(null);
@@ -22,18 +23,24 @@ export default function IncidentDetailPage() {
   const [resCategory, setResCategory] = useState("");
 
   const showToast = (message: string) => setToast(message);
+  const navigate = useNavigate();
+
 
   const load = useCallback(async () => {
     if (!id) return;
     const data = await getIncident(id);
     setDetail(data);
-    setNotes(data.incident.resolutionNotes ?? "");
-    setResCategory(data.incident.resolutionCategory ?? data.incident.category ?? "");
   }, [id]);
 
   useEffect(() => {
     load().catch((err: Error) => setError(err.message));
   }, [load]);
+
+  useEffect(() => {
+    if (!detail) return;
+    setNotes(detail.incident.resolutionNotes ?? "");
+    setResCategory(detail.incident.resolutionCategory ?? detail.incident.category ?? "");
+  }, [detail?.incident.id]);
 
   useEffect(() => {
     if (!detail) return;
@@ -84,14 +91,16 @@ export default function IncidentDetailPage() {
   }
 
   async function patch(body: Record<string, unknown>) {
-    if (!id) return;
+    if (!id) return false;
     setBusy("save");
     try {
       const data = await updateIncident(id, body);
       setDetail((prev) => (prev ? { ...prev, incident: data.incident } : prev));
       setToast("Saved.");
+      return true;
     } catch (err) {
       setToast((err as Error).message);
+      return false;
     } finally {
       setBusy(null);
     }
@@ -154,11 +163,15 @@ export default function IncidentDetailPage() {
           <label className="mb-4 block text-sm">
             <span className="mb-1 block text-slate-400">Summary</span>
             <textarea
-              defaultValue={incident.aiSummary ?? ""}
-              key={incident.aiSummary ?? "empty"}
-              onBlur={(e) => {
-                if (e.target.value !== (incident.aiSummary ?? "")) patch({ aiSummary: e.target.value });
-              }}
+              value={incident.aiSummary ?? ""}
+              onChange={(e) =>
+                setDetail((prev) =>
+                  prev
+                    ? { ...prev, incident: { ...prev.incident, aiSummary: e.target.value } }
+                    : prev,
+                )
+              }
+              onBlur={(e) => patch({ aiSummary: e.target.value })}
               rows={3}
               className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
               placeholder="AI summary appears here and stays editable"
@@ -170,7 +183,10 @@ export default function IncidentDetailPage() {
               <span className="mb-1 block text-slate-400">Category</span>
               <select
                 value={incident.category ?? ""}
-                onChange={(e) => patch({ category: e.target.value })}
+                onChange={(e) => {
+                  if (!e.target.value) return;
+                  patch({ category: e.target.value });
+                }}
                 className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
               >
                 <option value="">Select…</option>
@@ -185,7 +201,10 @@ export default function IncidentDetailPage() {
               <span className="mb-1 block text-slate-400">Priority</span>
               <select
                 value={incident.priority ?? ""}
-                onChange={(e) => patch({ priority: e.target.value })}
+                onChange={(e) => {
+                  if (!e.target.value) return;
+                  patch({ priority: e.target.value });
+                }}
                 className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
               >
                 <option value="">Select…</option>
@@ -242,13 +261,14 @@ export default function IncidentDetailPage() {
           <button
             className="mt-4 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
             disabled={busy === "save"}
-            onClick={() =>
-              patch({
+            onClick={async () => {
+              const ok = await patch({
                 resolutionNotes: notes,
                 resolutionCategory: resCategory,
                 status: "resolved",
-              })
-            }
+              });
+              if (ok) navigate("/");
+            }}
           >
             Mark resolved
           </button>

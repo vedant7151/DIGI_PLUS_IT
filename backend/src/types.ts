@@ -25,8 +25,12 @@ export type KBArticle = {
 };
 
 function asVector(value: unknown): number[] | null {
-  if (!Array.isArray(value) || typeof value[0] !== "number") return null;
-  return value as number[];
+  if (!Array.isArray(value) || value.length === 0) return null;
+  if (typeof value[0] === "number") return value as number[];
+  if (typeof value[0] === "string" && !Number.isNaN(Number(value[0]))) {
+    return (value as string[]).map(Number);
+  }
+  return null;
 }
 
 function iso(value: unknown): string {

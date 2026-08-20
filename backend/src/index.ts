@@ -21,7 +21,7 @@ app.get("/health", async (_req, res) => {
     res.status(503).json({
       ok: false,
       db: "unavailable",
-      message: "Could not reach MongoDB. Set MONGODB_URI in backend/.env (Atlas free tier is fine).",
+      message: "Could not reach MongoDB Atlas. Check MONGODB_URI in backend/.env.",
       detail: message,
     });
   }
@@ -35,7 +35,7 @@ app.use("/api", async (_req, res, next) => {
     const message = err instanceof Error ? err.message : "Unknown database error";
     res.status(500).json({
       error: "server_error",
-      message: "Could not reach MongoDB. Check MONGODB_URI.",
+      message: "Could not reach MongoDB Atlas. Check MONGODB_URI.",
       detail: message,
     });
   }
